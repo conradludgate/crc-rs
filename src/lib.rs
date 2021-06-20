@@ -1,75 +1,107 @@
-pub struct CRC16<const POLY: u16, const INIT: u16, const XOROUT: u16>(u16);
-pub type CRC16XModem = CRC16<0x1021, 0x0000, 0x0000>;
-pub type CRC16Genibus = CRC16<0x1021, 0xFFFF, 0xFFFF>;
-pub type CRC16CDMA2000 = CRC16<0xC867, 0xFFFF, 0x0000>;
+pub struct CRC16<
+    const POLY: u16,
+    const INIT: u16,
+    const XOROUT: u16,
+    const REFIN: bool,
+    const REFOUT: bool,
+>;
+pub type CRC16XModem = CRC16<0x1021, 0x0000, 0x0000, false, false>;
+pub type CRC16Genibus = CRC16<0x1021, 0xFFFF, 0xFFFF, false, false>;
+pub type CRC16CDMA2000 = CRC16<0xC867, 0xFFFF, 0x0000, false, false>;
 
-impl<const POLY: u16, const INIT: u16, const XOROUT: u16> CRC16<POLY, INIT, XOROUT> {
-    pub const fn new() -> Self {
-        Self(INIT)
+impl<
+        const POLY: u16,
+        const INIT: u16,
+        const XOROUT: u16,
+        const REFIN: bool,
+        const REFOUT: bool,
+    > CRC16<POLY, INIT, XOROUT, REFIN, REFOUT>
+{
+    const fn gen_byte(b: u8) -> u16 {
+        let mut crc = (b as u16) << 8;
+
+        // unrolled `for i in 0..8`
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+        crc = (crc << 1) ^ [0, POLY][(crc >> 15) as usize];
+
+        crc
     }
+
+    const fn init() -> u16 {
+        INIT
+    }
+
+    const fn next(crc: u16, c: u8) -> u16 {
+        let c = if REFIN { c.reverse_bits() } else { c };
+        let c = (crc >> 8) as u8 ^ c;
+        (crc << 8) ^ Self::gen_byte(c)
+    }
+
+    const fn finish(crc: u16) -> u16 {
+        let crc = if REFOUT { crc.reverse_bits() } else { crc };
+        crc ^ XOROUT
+    }
+
+    pub const CHECK: u16 = {
+        let crc = Self::init();
+
+        let crc = Self::next(crc, b'0' + 1);
+        let crc = Self::next(crc, b'0' + 2);
+        let crc = Self::next(crc, b'0' + 3);
+        let crc = Self::next(crc, b'0' + 4);
+        let crc = Self::next(crc, b'0' + 5);
+        let crc = Self::next(crc, b'0' + 6);
+        let crc = Self::next(crc, b'0' + 7);
+        let crc = Self::next(crc, b'0' + 8);
+        let crc = Self::next(crc, b'0' + 9);
+
+        Self::finish(crc)
+    };
 }
 
-impl<const POLY: u16, const INIT: u16, const XOROUT: u16> CRC for CRC16<POLY, INIT, XOROUT> {
+impl<
+        const POLY: u16,
+        const INIT: u16,
+        const XOROUT: u16,
+        const REFIN: bool,
+        const REFOUT: bool,
+    > CRC for CRC16<POLY, INIT, XOROUT, REFIN, REFOUT>
+{
     type Output = u16;
 
-    fn push_bit(&mut self, inc: u8) {
-        debug_assert!(inc < 2);
-
-        let xor = [0, POLY][(self.0 >> 15) as usize];
-        self.0 <<= 1;
-        self.0 |= inc as u16;
-        self.0 ^= xor;
-    }
-
-    fn output(mut self) -> Self::Output {
-        self.write(&[0, 0]);
-        self.0 ^ XOROUT
-    }
-
-    fn verify(self) -> bool {
-        self.0 == 0
+    fn calculate(bytes: &[u8]) -> u16 {
+        let crc = bytes.iter().map(|&c| c).fold(Self::init(), Self::next);
+        Self::finish(crc)
     }
 }
 
 pub trait CRC {
     type Output;
-    fn push_bit(&mut self, inc: u8);
-    fn output(self) -> Self::Output;
-    fn verify(self) -> bool;
-
-    fn write(&mut self, bytes: &[u8]) {
-        for c in bytes {
-            let mut c: u8 = *c;
-            for _ in 0..8 {
-                self.push_bit(c >> 7);
-                c <<= 1;
-            }
-        }
-    }
+    fn calculate(bytes: &[u8]) -> Self::Output;
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{CRC, CRC16CDMA2000, CRC16Genibus, CRC16XModem};
+    use crate::{CRC16Genibus, CRC16XModem, CRC16CDMA2000};
 
     #[test]
     fn crc16_xmodem() {
-        let mut crc = CRC16XModem::new();
-        crc.write(b"123456789");
-        assert_eq!(crc.output(), 0x31C3);
+        assert_eq!(CRC16XModem::CHECK, 0x31C3);
     }
 
     #[test]
     fn crc16_genibus() {
-        let mut crc = CRC16Genibus::new();
-        crc.write(b"123456789");
-        assert_eq!(crc.output(), 0xD64E);
+        assert_eq!(CRC16Genibus::CHECK, 0xD64E);
     }
 
     #[test]
     fn crc16_cdma2000() {
-        let mut crc = CRC16CDMA2000::new();
-        crc.write(b"123456789");
-        assert_eq!(crc.output(), 0x4C06);
+        assert_eq!(CRC16CDMA2000::CHECK, 0x4C06);
     }
 }
